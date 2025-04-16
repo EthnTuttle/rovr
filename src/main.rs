@@ -117,6 +117,7 @@ async fn main() -> Result<()> {
                 if let Some(captures) = youtube_regex.captures(&decrypted_content) {
                     if let Some(video_id) = captures.get(1) {
                         info!("Found YouTube video ID: {}", video_id.as_str());
+                        let youtube_url = format!("https://youtube.com/watch?v={}", video_id.as_str());
                         
                         // Download and convert to MP3
                         let output = Command::new("yt-dlp")
@@ -125,14 +126,14 @@ async fn main() -> Result<()> {
                                 "--audio-format", "mp3", // Convert to MP3
                                 "--audio-quality", "0", // Best quality
                                 "-o", "downloads/%(title)s.%(ext)s", // Output format
-                                &format!("https://youtube.com/watch?v={}", video_id.as_str()),
+                                &youtube_url,
                             ])
                             .output()?;
 
                         if output.status.success() {
                             info!("Successfully downloaded and converted video");
-                            // Send success message back to user
-                            let response = "Successfully downloaded and converted the video to MP3!";
+                            // Send success message with YouTube link
+                            let response = format!("Successfully downloaded and converted the video to MP3!\n\nYouTube: {}", youtube_url);
                             let encrypted_content = nip04::encrypt(
                                 &keys.secret_key()?,
                                 &event.pubkey,
@@ -148,8 +149,8 @@ async fn main() -> Result<()> {
                             info!("Sent success response to user");
                         } else {
                             error!("Failed to download video. Error: {:?}", String::from_utf8_lossy(&output.stderr));
-                            // Send error message back to user
-                            let error_msg = "Failed to download and convert the video. Please try again later.";
+                            // Send error message with YouTube link
+                            let error_msg = format!("Failed to download and convert the video.\n\nYouTube: {}\n\nPlease try again later.", youtube_url);
                             let encrypted_content = nip04::encrypt(
                                 &keys.secret_key()?,
                                 &event.pubkey,
