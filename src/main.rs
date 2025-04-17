@@ -186,8 +186,11 @@ async fn handle_download(
     let youtube_url = format!("https://youtube.com/watch?v={}", video_id);
     info!("Starting download for video ID: {}", video_id);
     
+    // Use yt-dlp from virtual environment
+    let yt_dlp_path = PathBuf::from("/home/ethan/code/rovr/venv/bin/yt-dlp");
+    
     // Download and convert to audio
-    let output = Command::new("./venv/bin/yt-dlp")
+    let output = Command::new(yt_dlp_path)
         .args([
             "-x", // Extract audio
             "--audio-format", &format,

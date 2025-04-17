@@ -4,10 +4,11 @@ After=network.target
 
 [Service]
 Type=simple
-User=%USER%
-WorkingDirectory=/home/%USER%/.local/share/rovr
+User=ethan
+WorkingDirectory=/home/ethan/code/rovr
 Environment="RUST_BACKTRACE=1"
-ExecStart=/usr/local/bin/rovr
+Environment="PATH=/home/ethan/code/rovr/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/home/ethan/code/rovr/target/release/rovr
 Restart=always
 RestartSec=10
 

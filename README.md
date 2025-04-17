@@ -66,12 +66,19 @@ The script will check for dependencies, set up the environment, and create a def
 
 To run Rovr as a system service on Linux:
 
-1. Build the release version:
+1. Set up Python virtual environment and install yt-dlp:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install yt-dlp
+```
+
+2. Build the release version:
 ```bash
 cargo build --release
 ```
 
-2. Install the systemd service:
+3. Install the systemd service:
 ```bash
 chmod +x install-service.sh
 sudo ./install-service.sh
@@ -82,6 +89,31 @@ The script will:
 - Set up the systemd service
 - Ask if you want to start the service
 - Ask if you want to enable the service on boot
+
+#### Important Path Configuration
+
+The bot requires yt-dlp to be available in a known location. We handle this in two places:
+
+1. In the systemd service file (`rovr.service`):
+```ini
+[Service]
+User=ethan  # Change this to your username
+WorkingDirectory=/home/ethan/code/rovr  # Change to your project directory
+Environment="PATH=/home/ethan/code/rovr/venv/bin:/usr/local/bin:/usr/bin:/bin"
+```
+
+2. In the Rust code (`src/main.rs`):
+```rust
+let yt_dlp_path = PathBuf::from("/home/ethan/code/rovr/venv/bin/yt-dlp");
+```
+
+This setup ensures that:
+- The service runs in your project directory where the virtual environment is located
+- The PATH includes the virtual environment's bin directory first
+- The code knows exactly where to find yt-dlp
+- Dependencies are isolated and version-controlled in your project's virtual environment
+
+Make sure to update both paths to match your system's directory structure and username.
 
 Common systemd commands:
 - Start service: `sudo systemctl start rovr`
