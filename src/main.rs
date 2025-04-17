@@ -29,9 +29,20 @@ struct BotConfig {
 }
 
 fn load_config() -> Result<BotConfig> {
-    let mut config = Config::default();
-    config.merge(config::File::with_name("config"))?;
+    let mut builder = Config::builder();
+    
+    // First try to load from application data directory
+    if let Some(proj_dirs) = ProjectDirs::from("com", "rovr", "rovr") {
+        let config_path = proj_dirs.data_dir().join("config.toml");
+        if config_path.exists() {
+            builder = builder.add_source(config::File::from(config_path));
+        }
+    }
+    
+    // Then try to load from current directory (for backward compatibility)
+    builder = builder.add_source(config::File::with_name("config"));
 
+    let config = builder.build()?;
     let settings = config.try_deserialize::<serde_json::Value>()?;
     
     Ok(BotConfig {
@@ -288,7 +299,7 @@ async fn main() -> Result<()> {
     let client_clone = client.clone();
     let keys_clone = keys.clone();
     let config_arc = Arc::new(RwLock::new(config.clone()));
-    let mut last_pubkeys_arc = Arc::new(RwLock::new(Vec::new()));
+    let last_pubkeys_arc = Arc::new(RwLock::new(Vec::new()));
     
     tokio::spawn(async move {
         loop {

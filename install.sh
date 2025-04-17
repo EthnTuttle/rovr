@@ -37,28 +37,91 @@ pip install yt-dlp
 echo "Building the Rust project..."
 cargo build --release
 
-# Create default config file if it doesn't exist
-if [ ! -f config.toml ]; then
-    echo "Creating default config file..."
-    cat > config.toml << EOL
+# Get the application data directory
+if [ -z "$XDG_DATA_HOME" ]; then
+    DATA_DIR="$HOME/.local/share/rovr"
+else
+    DATA_DIR="$XDG_DATA_HOME/rovr"
+fi
+
+# Create the application data directory
+echo "Creating application data directory..."
+mkdir -p "$DATA_DIR"
+
+# Function to read input with default value
+read_with_default() {
+    local prompt="$1"
+    local default="$2"
+    local input
+    
+    echo -n "$prompt [$default]: "
+    read input
+    echo "${input:-$default}"
+}
+
+# Function to read multiple values
+read_multiple() {
+    local prompt="$1"
+    local values=()
+    local input
+    
+    echo "$prompt (press Enter twice to finish):"
+    while true; do
+        read input
+        if [ -z "$input" ]; then
+            break
+        fi
+        values+=("$input")
+    done
+    echo "${values[@]}"
+}
+
+# Gather configuration information
+echo -e "\n=== Bot Configuration ==="
+BOT_NAME=$(read_with_default "Enter bot name" "YouTube Downloader Bot")
+echo "Enter allowed public keys (npub format):"
+ALLOWED_PUBKEYS=($(read_multiple "Enter a public key"))
+NIP05=$(read_with_default "Enter NIP-05 identifier (optional)" "")
+
+echo -e "\n=== Relay Configuration ==="
+echo "Enter relay URLs (press Enter twice to finish):"
+DEFAULT_RELAYS=("wss://relay.damus.io" "wss://nostr.wine" "wss://relay.nostr.band")
+RELAY_URLS=($(read_multiple "Enter a relay URL"))
+
+# If no relays were entered, use defaults
+if [ ${#RELAY_URLS[@]} -eq 0 ]; then
+    RELAY_URLS=("${DEFAULT_RELAYS[@]}")
+fi
+
+echo -e "\n=== Download Configuration ==="
+FORMAT=$(read_with_default "Enter audio format (mp3, aac, etc.)" "mp3")
+QUALITY=$(read_with_default "Enter audio quality (0 = best)" "0")
+
+# Create the config file in the application data directory
+echo "Creating configuration file..."
+cat > "$DATA_DIR/config.toml" << EOL
 [bot]
-name = "YouTube Downloader Bot"
-allowed_pubkeys = []
-nip05 = ""
+name = "$BOT_NAME"
+allowed_pubkeys = [
+    $(printf '"%s",\n' "${ALLOWED_PUBKEYS[@]}" | sed '$s/,$//')
+]
+nip05 = "$NIP05"
 
 [relays]
 urls = [
-    "wss://relay.damus.io",
-    "wss://nostr.wine",
-    "wss://relay.nostr.band"
+    $(printf '"%s",\n' "${RELAY_URLS[@]}" | sed '$s/,$//')
 ]
 
 [downloads]
-format = "mp3"
-quality = "0"
+format = "$FORMAT"
+quality = "$QUALITY"
 EOL
+
+# Create a symlink to the config file in the project directory for convenience
+if [ ! -f "config.toml" ]; then
+    ln -s "$DATA_DIR/config.toml" config.toml
 fi
 
 echo "Installation complete!"
-echo "Please edit config.toml to add your allowed pubkeys and other settings."
+echo "Configuration saved to: $DATA_DIR/config.toml"
 echo "To run the bot, use: cargo run" 
