@@ -2,6 +2,11 @@
 name = "rovr"
 version = "0.1.0"
 edition = "2021"
+description = "A Rust-based project for video processing and manipulation"
+authors = ["Ethan Tuttle"]
+license = "MIT"
+repository = "https://github.com/EthnTuttle/rovr"
+readme = "README.md"
 
 [dependencies]
 anyhow = "1.0"
