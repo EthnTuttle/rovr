@@ -13,12 +13,15 @@ use directories::ProjectDirs;
 use reqwest;
 use serde_json::json;
 use config::Config;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 const YOUTUBE_URL_PATTERN: &str = r"(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})";
 
+#[derive(Clone)]
 struct BotConfig {
     name: String,
-    allowed_pubkey: String,
+    allowed_pubkeys: Vec<String>,
     nip05: String,
     relays: Vec<String>,
     format: String,
@@ -33,14 +36,18 @@ fn load_config() -> Result<BotConfig> {
     
     Ok(BotConfig {
         name: settings["bot"]["name"].as_str().unwrap_or("YouTube Downloader Bot").to_string(),
-        allowed_pubkey: settings["bot"]["allowed_pubkey"].as_str().unwrap_or("").to_string(),
+        allowed_pubkeys: settings["bot"]["allowed_pubkeys"].as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
         nip05: settings["bot"]["nip05"].as_str().unwrap_or("").to_string(),
         relays: settings["relays"]["urls"].as_array()
             .unwrap_or(&vec![])
             .iter()
             .filter_map(|v| v.as_str().map(String::from))
             .collect(),
-        format: settings["downloads"]["format"].as_str().unwrap_or("aac").to_string(),
+        format: settings["downloads"]["format"].as_str().unwrap_or("mp3").to_string(),
         quality: settings["downloads"]["quality"].as_str().unwrap_or("0").to_string(),
     })
 }
@@ -89,14 +96,14 @@ async fn get_random_dog_image() -> Result<String> {
     Ok(response["message"].as_str().unwrap().to_string())
 }
 
-async fn set_profile_metadata(client: &Client, keys: &Keys) -> Result<()> {
+async fn set_profile_metadata(client: &Client, keys: &Keys, name: &str, nip05: &str) -> Result<()> {
     let dog_image = get_random_dog_image().await?;
     
     let metadata = json!({
-        "name": BOT_NAME,
+        "name": name,
         "about": "I download YouTube videos and convert them to MP3!",
         "picture": dog_image,
-        "nip05": "youtube_downloader@nostr.band"
+        "nip05": nip05
     });
 
     let metadata_event = EventBuilder::new(
@@ -106,7 +113,7 @@ async fn set_profile_metadata(client: &Client, keys: &Keys) -> Result<()> {
     ).to_event(keys)?;
 
     client.send_event(metadata_event).await?;
-    info!("Set profile metadata with name: {} and random dog picture", BOT_NAME);
+    info!("Set profile metadata with name: {} and random dog picture", name);
     
     Ok(())
 }
@@ -120,6 +127,95 @@ fn get_downloads_dir() -> Result<PathBuf> {
         error!("Could not determine application data directory");
         Ok(PathBuf::from("downloads"))
     }
+}
+
+async fn update_subscription(client: &Client, keys: &Keys, allowed_pubkeys: &[String]) -> Result<()> {
+    // Convert allowed pubkeys to XOnlyPublicKey
+    let mut authors = Vec::new();
+    for pubkey in allowed_pubkeys {
+        if let Ok(pk) = XOnlyPublicKey::from_bech32(pubkey) {
+            authors.push(pk);
+        }
+    }
+
+    // Create a new subscription for DMs from the allowed pubkeys
+    let subscription = Filter::new()
+        .kinds(vec![Kind::EncryptedDirectMessage])
+        .pubkey(keys.public_key())
+        .authors(authors)
+        .since(Timestamp::now());
+
+    // Unsubscribe from old filters
+    client.unsubscribe().await;
+    
+    // Subscribe to new filters
+    client.subscribe(vec![subscription]).await;
+    info!("Updated subscription with {} allowed pubkeys", allowed_pubkeys.len());
+    
+    Ok(())
+}
+
+async fn handle_download(
+    client: &Client,
+    keys: &Keys,
+    event: &Event,
+    video_id: &str,
+    format: String,
+    quality: String,
+    downloads_dir: PathBuf,
+) -> Result<()> {
+    let youtube_url = format!("https://youtube.com/watch?v={}", video_id);
+    info!("Starting download for video ID: {}", video_id);
+    
+    // Download and convert to audio
+    let output = Command::new("./venv/bin/yt-dlp")
+        .args([
+            "-x", // Extract audio
+            "--audio-format", &format,
+            "--audio-quality", &quality,
+            "-o", // Output format
+            &format!("{}/%(title)s.%(ext)s", downloads_dir.display()),
+            &youtube_url,
+        ])
+        .output()?;
+
+    if output.status.success() {
+        info!("Successfully downloaded and converted video: {}", video_id);
+        // Send success message with YouTube link
+        let response = format!("Successfully downloaded and converted the video to {}!\n\nYouTube: {}", format.to_uppercase(), youtube_url);
+        let encrypted_content = nip04::encrypt(
+            &keys.secret_key()?,
+            &event.pubkey,
+            response,
+        )?;
+        let response_event = EventBuilder::new(
+            Kind::EncryptedDirectMessage,
+            encrypted_content,
+            &[Tag::parse(vec!["p", &event.pubkey.to_string()]).unwrap()],
+        ).to_event(&keys)?;
+        
+        client.send_event(response_event).await?;
+        info!("Sent success response to user for video: {}", video_id);
+    } else {
+        error!("Failed to download video {}. Error: {:?}", video_id, String::from_utf8_lossy(&output.stderr));
+        // Send error message with YouTube link
+        let error_msg = format!("Failed to download and convert the video.\n\nYouTube: {}\n\nPlease try again later.", youtube_url);
+        let encrypted_content = nip04::encrypt(
+            &keys.secret_key()?,
+            &event.pubkey,
+            error_msg,
+        )?;
+        let error_event = EventBuilder::new(
+            Kind::EncryptedDirectMessage,
+            encrypted_content,
+            &[Tag::parse(vec!["p", &event.pubkey.to_string()]).unwrap()],
+        ).to_event(&keys)?;
+        
+        client.send_event(error_event).await?;
+        info!("Sent error response to user for video: {}", video_id);
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -163,43 +259,32 @@ async fn main() -> Result<()> {
     info!("Connected to all relays");
 
     // Set profile metadata
-    let dog_image = get_random_dog_image().await?;
-    let metadata = json!({
-        "name": config.name,
-        "about": "I download YouTube videos and convert them to MP3!",
-        "picture": dog_image,
-        "nip05": config.nip05
-    });
+    set_profile_metadata(&client, &keys, &config.name, &config.nip05).await?;
 
-    let metadata_event = EventBuilder::new(
-        Kind::Metadata,
-        metadata.to_string(),
-        &[],
-    ).to_event(&keys)?;
-
-    client.send_event(metadata_event).await?;
-    info!("Set profile metadata with name: {} and random dog picture", config.name);
-
-    // Convert the allowed pubkey to XOnlyPublicKey
-    let allowed_pubkey = XOnlyPublicKey::from_bech32(&config.allowed_pubkey)?;
-    info!("Converted allowed pubkey: {}", config.allowed_pubkey);
-
-    // Create a subscription for DMs from the specific pubkey
-    let subscription = Filter::new()
-        .kinds(vec![Kind::EncryptedDirectMessage])
-        .pubkey(keys.public_key())
-        .authors(vec![allowed_pubkey])
-        .since(Timestamp::now());
-
-    // Subscribe to DMs
-    client.subscribe(vec![subscription]).await;
-    info!("Subscribed to DMs from {}", config.allowed_pubkey);
+    // Initial subscription setup
+    update_subscription(&client, &keys, &config.allowed_pubkeys).await?;
 
     // Create regex for YouTube URLs
     let youtube_regex = Regex::new(YOUTUBE_URL_PATTERN).unwrap();
     info!("Initialized YouTube URL regex");
 
-    info!("Bot is running and listening for DMs from {}", config.allowed_pubkey);
+    info!("Bot is running and listening for DMs from allowed pubkeys");
+
+    // Spawn a task to periodically update the subscription
+    let client_clone = client.clone();
+    let keys_clone = keys.clone();
+    let config_arc = Arc::new(RwLock::new(config.clone()));
+    
+    tokio::spawn(async move {
+        loop {
+            sleep(Duration::from_secs(5)).await;
+            let config = config_arc.read().await;
+            let pubkeys = config.allowed_pubkeys.clone();
+            if let Err(e) = update_subscription(&client_clone, &keys_clone, &pubkeys).await {
+                error!("Failed to update subscription: {}", e);
+            }
+        }
+    });
 
     // Listen for events
     let mut notifications = client.notifications();
@@ -217,56 +302,30 @@ async fn main() -> Result<()> {
                 // Check if the message contains a YouTube URL
                 if let Some(captures) = youtube_regex.captures(&decrypted_content) {
                     if let Some(video_id) = captures.get(1) {
-                        info!("Found YouTube video ID: {}", video_id.as_str());
-                        let youtube_url = format!("https://youtube.com/watch?v={}", video_id.as_str());
+                        let video_id_str = video_id.as_str().to_string();
+                        info!("Spawning download task for video: {}", video_id_str);
                         
-                        // Download and convert to audio
-                        let output = Command::new("./venv/bin/yt-dlp")
-                            .args([
-                                "-x", // Extract audio
-                                "--audio-format", &config.format,
-                                "--audio-quality", &config.quality,
-                                "-o", // Output format
-                                &format!("{}/%(title)s.%(ext)s", downloads_dir.display()),
-                                &youtube_url,
-                            ])
-                            .output()?;
-
-                        if output.status.success() {
-                            info!("Successfully downloaded and converted video");
-                            // Send success message with YouTube link
-                            let response = format!("Successfully downloaded and converted the video to {}!\n\nYouTube: {}", config.format.to_uppercase(), youtube_url);
-                            let encrypted_content = nip04::encrypt(
-                                &keys.secret_key()?,
-                                &event.pubkey,
-                                response,
-                            )?;
-                            let response_event = EventBuilder::new(
-                                Kind::EncryptedDirectMessage,
-                                encrypted_content,
-                                &[Tag::parse(vec!["p", &event.pubkey.to_string()]).unwrap()],
-                            ).to_event(&keys)?;
-                            
-                            client.send_event(response_event).await?;
-                            info!("Sent success response to user");
-                        } else {
-                            error!("Failed to download video. Error: {:?}", String::from_utf8_lossy(&output.stderr));
-                            // Send error message with YouTube link
-                            let error_msg = format!("Failed to download and convert the video.\n\nYouTube: {}\n\nPlease try again later.", youtube_url);
-                            let encrypted_content = nip04::encrypt(
-                                &keys.secret_key()?,
-                                &event.pubkey,
-                                error_msg,
-                            )?;
-                            let error_event = EventBuilder::new(
-                                Kind::EncryptedDirectMessage,
-                                encrypted_content,
-                                &[Tag::parse(vec!["p", &event.pubkey.to_string()]).unwrap()],
-                            ).to_event(&keys)?;
-                            
-                            client.send_event(error_event).await?;
-                            info!("Sent error response to user");
-                        }
+                        let format = config.format.clone();
+                        let quality = config.quality.clone();
+                        let downloads_dir = downloads_dir.clone();
+                        let client = client.clone();
+                        let keys = keys.clone();
+                        let event = event.clone();
+                        
+                        // Spawn a new task for the download
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_download(
+                                &client,
+                                &keys,
+                                &event,
+                                &video_id_str,
+                                format,
+                                quality,
+                                downloads_dir,
+                            ).await {
+                                error!("Error handling download for video {}: {}", video_id_str, e);
+                            }
+                        });
                     }
                 } else {
                     info!("Message did not contain a YouTube URL");
