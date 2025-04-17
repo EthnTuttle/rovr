@@ -98,6 +98,12 @@ async fn main() -> Result<()> {
     let youtube_regex = Regex::new(YOUTUBE_URL_PATTERN).unwrap();
     info!("Initialized YouTube URL regex");
 
+    // Create downloads directory if it doesn't exist
+    if !PathBuf::from("downloads").exists() {
+        fs::create_dir_all("downloads")?;
+        info!("Created downloads directory");
+    }
+
     info!("Bot is running and listening for DMs from {}", ALLOWED_PUBKEY);
 
     // Listen for events
