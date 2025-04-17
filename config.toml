@@ -1,0 +1,15 @@
+[bot]
+name = "YouTube Downloader Bot"
+allowed_pubkey = "npub160t5zfxalddaccdc7xx30sentwa5lrr3rq4rtm38x99ynf8t0vwsvzyjc9"
+nip05 = ""
+
+[relays]
+urls = [
+    "wss://relay.damus.io",
+    "wss://nostr.wine",
+    "wss://relay.nostr.band"
+]
+
+[downloads]
+format = "mp3"
+quality = "0" 

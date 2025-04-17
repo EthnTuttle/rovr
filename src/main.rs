@@ -12,10 +12,38 @@ use log::{info, error};
 use directories::ProjectDirs;
 use reqwest;
 use serde_json::json;
+use config::Config;
 
 const YOUTUBE_URL_PATTERN: &str = r"(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})";
-const ALLOWED_PUBKEY: &str = "npub160t5zfxalddaccdc7xx30sentwa5lrr3rq4rtm38x99ynf8t0vwsvzyjc9";
-const BOT_NAME: &str = "YouTube Downloader Bot";
+
+struct BotConfig {
+    name: String,
+    allowed_pubkey: String,
+    nip05: String,
+    relays: Vec<String>,
+    format: String,
+    quality: String,
+}
+
+fn load_config() -> Result<BotConfig> {
+    let mut config = Config::default();
+    config.merge(config::File::with_name("config"))?;
+
+    let settings = config.try_deserialize::<serde_json::Value>()?;
+    
+    Ok(BotConfig {
+        name: settings["bot"]["name"].as_str().unwrap_or("YouTube Downloader Bot").to_string(),
+        allowed_pubkey: settings["bot"]["allowed_pubkey"].as_str().unwrap_or("").to_string(),
+        nip05: settings["bot"]["nip05"].as_str().unwrap_or("").to_string(),
+        relays: settings["relays"]["urls"].as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        format: settings["downloads"]["format"].as_str().unwrap_or("aac").to_string(),
+        quality: settings["downloads"]["quality"].as_str().unwrap_or("0").to_string(),
+    })
+}
 
 fn get_keys() -> Result<Keys> {
     if let Some(proj_dirs) = ProjectDirs::from("com", "rovr", "rovr") {
@@ -100,11 +128,15 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     info!("Starting YouTube DM bot...");
 
+    // Load configuration
+    let config = load_config()?;
+    info!("Loaded configuration");
+
     // Load or generate keys
     let keys = get_keys()?;
     let bot_npub = keys.public_key().to_bech32()?;
     println!("\n=== BOT IDENTITY ===");
-    println!("Name: {}", BOT_NAME);
+    println!("Name: {}", config.name);
     println!("npub: {}", bot_npub);
     println!("===================\n");
     info!("Bot public key: {}", bot_npub);
@@ -120,9 +152,10 @@ async fn main() -> Result<()> {
 
     // Add relays
     info!("Connecting to relays...");
-    client.add_relay("wss://relay.damus.io", None).await?;
-    client.add_relay("wss://nostr.wine", None).await?;
-    client.add_relay("wss://relay.nostr.band", None).await?;
+    for relay in &config.relays {
+        client.add_relay(relay.clone(), None).await?;
+        info!("Added relay: {}", relay);
+    }
     info!("Added all relays");
 
     // Connect to relays
@@ -130,11 +163,26 @@ async fn main() -> Result<()> {
     info!("Connected to all relays");
 
     // Set profile metadata
-    set_profile_metadata(&client, &keys).await?;
+    let dog_image = get_random_dog_image().await?;
+    let metadata = json!({
+        "name": config.name,
+        "about": "I download YouTube videos and convert them to MP3!",
+        "picture": dog_image,
+        "nip05": config.nip05
+    });
+
+    let metadata_event = EventBuilder::new(
+        Kind::Metadata,
+        metadata.to_string(),
+        &[],
+    ).to_event(&keys)?;
+
+    client.send_event(metadata_event).await?;
+    info!("Set profile metadata with name: {} and random dog picture", config.name);
 
     // Convert the allowed pubkey to XOnlyPublicKey
-    let allowed_pubkey = XOnlyPublicKey::from_bech32(ALLOWED_PUBKEY)?;
-    info!("Converted allowed pubkey: {}", ALLOWED_PUBKEY);
+    let allowed_pubkey = XOnlyPublicKey::from_bech32(&config.allowed_pubkey)?;
+    info!("Converted allowed pubkey: {}", config.allowed_pubkey);
 
     // Create a subscription for DMs from the specific pubkey
     let subscription = Filter::new()
@@ -145,13 +193,13 @@ async fn main() -> Result<()> {
 
     // Subscribe to DMs
     client.subscribe(vec![subscription]).await;
-    info!("Subscribed to DMs from {}", ALLOWED_PUBKEY);
+    info!("Subscribed to DMs from {}", config.allowed_pubkey);
 
     // Create regex for YouTube URLs
     let youtube_regex = Regex::new(YOUTUBE_URL_PATTERN).unwrap();
     info!("Initialized YouTube URL regex");
 
-    info!("Bot is running and listening for DMs from {}", ALLOWED_PUBKEY);
+    info!("Bot is running and listening for DMs from {}", config.allowed_pubkey);
 
     // Listen for events
     let mut notifications = client.notifications();
@@ -172,12 +220,12 @@ async fn main() -> Result<()> {
                         info!("Found YouTube video ID: {}", video_id.as_str());
                         let youtube_url = format!("https://youtube.com/watch?v={}", video_id.as_str());
                         
-                        // Download and convert to MP3
+                        // Download and convert to audio
                         let output = Command::new("./venv/bin/yt-dlp")
                             .args([
                                 "-x", // Extract audio
-                                "--audio-format", "aac", // Convert to AAC
-                                "--audio-quality", "0", // Best quality
+                                "--audio-format", &config.format,
+                                "--audio-quality", &config.quality,
                                 "-o", // Output format
                                 &format!("{}/%(title)s.%(ext)s", downloads_dir.display()),
                                 &youtube_url,
@@ -187,7 +235,7 @@ async fn main() -> Result<()> {
                         if output.status.success() {
                             info!("Successfully downloaded and converted video");
                             // Send success message with YouTube link
-                            let response = format!("Successfully downloaded and converted the video to MP3!\n\nYouTube: {}", youtube_url);
+                            let response = format!("Successfully downloaded and converted the video to {}!\n\nYouTube: {}", config.format.to_uppercase(), youtube_url);
                             let encrypted_content = nip04::encrypt(
                                 &keys.secret_key()?,
                                 &event.pubkey,
