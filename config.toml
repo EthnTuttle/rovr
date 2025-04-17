@@ -1,5 +1,5 @@
 [bot]
-name = "rovr"
+name = "YouTube Downloader Bot"
 allowed_pubkeys = [
     "npub160t5zfxalddaccdc7xx30sentwa5lrr3rq4rtm38x99ynf8t0vwsvzyjc9"
 ]
