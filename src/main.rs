@@ -129,7 +129,15 @@ fn get_downloads_dir() -> Result<PathBuf> {
     }
 }
 
-async fn update_subscription(client: &Client, keys: &Keys, allowed_pubkeys: &[String]) -> Result<()> {
+async fn update_subscription(client: &Client, keys: &Keys, allowed_pubkeys: &[String], last_pubkeys: &mut Vec<String>) -> Result<bool> {
+    // Check if the pubkeys have changed
+    if allowed_pubkeys == last_pubkeys {
+        return Ok(false);
+    }
+
+    // Update last known pubkeys
+    *last_pubkeys = allowed_pubkeys.to_vec();
+
     // Convert allowed pubkeys to XOnlyPublicKey
     let mut authors = Vec::new();
     for pubkey in allowed_pubkeys {
@@ -152,7 +160,7 @@ async fn update_subscription(client: &Client, keys: &Keys, allowed_pubkeys: &[St
     client.subscribe(vec![subscription]).await;
     info!("Updated subscription with {} allowed pubkeys", allowed_pubkeys.len());
     
-    Ok(())
+    Ok(true)
 }
 
 async fn handle_download(
@@ -181,8 +189,13 @@ async fn handle_download(
 
     if output.status.success() {
         info!("Successfully downloaded and converted video: {}", video_id);
-        // Send success message with YouTube link
-        let response = format!("Successfully downloaded and converted the video to {}!\n\nYouTube: {}", format.to_uppercase(), youtube_url);
+        // Send success message with YouTube link and download path
+        let response = format!(
+            "Successfully downloaded and converted the video to {}!\n\nYouTube: {}\n\nFile saved to: {}",
+            format.to_uppercase(),
+            youtube_url,
+            downloads_dir.display()
+        );
         let encrypted_content = nip04::encrypt(
             &keys.secret_key()?,
             &event.pubkey,
@@ -262,7 +275,8 @@ async fn main() -> Result<()> {
     set_profile_metadata(&client, &keys, &config.name, &config.nip05).await?;
 
     // Initial subscription setup
-    update_subscription(&client, &keys, &config.allowed_pubkeys).await?;
+    let mut last_pubkeys = Vec::new();
+    update_subscription(&client, &keys, &config.allowed_pubkeys, &mut last_pubkeys).await?;
 
     // Create regex for YouTube URLs
     let youtube_regex = Regex::new(YOUTUBE_URL_PATTERN).unwrap();
@@ -274,13 +288,15 @@ async fn main() -> Result<()> {
     let client_clone = client.clone();
     let keys_clone = keys.clone();
     let config_arc = Arc::new(RwLock::new(config.clone()));
+    let mut last_pubkeys_arc = Arc::new(RwLock::new(Vec::new()));
     
     tokio::spawn(async move {
         loop {
             sleep(Duration::from_secs(5)).await;
             let config = config_arc.read().await;
             let pubkeys = config.allowed_pubkeys.clone();
-            if let Err(e) = update_subscription(&client_clone, &keys_clone, &pubkeys).await {
+            let mut last_pubkeys = last_pubkeys_arc.write().await;
+            if let Err(e) = update_subscription(&client_clone, &keys_clone, &pubkeys, &mut last_pubkeys).await {
                 error!("Failed to update subscription: {}", e);
             }
         }

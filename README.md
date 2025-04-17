@@ -2,14 +2,38 @@
 
 A Rust-based Nostr bot that downloads and converts YouTube videos to MP3 format. The bot listens for direct messages containing YouTube URLs from authorized users and automatically downloads and converts them in parallel.
 
-## Prerequisites
-
-- Rust (latest stable version)
-- FFmpeg (version 7.1.1 or compatible)
-- Python 3.x (for yt-dlp)
-- Virtual environment (recommended)
-
 ## Installation
+
+### Option 1: Using Nix (Recommended)
+
+Nix provides a complete, reproducible development environment with all dependencies. This is the recommended way to install Rovr as it ensures consistent behavior across different systems.
+
+1. Install Nix using the Determinate Systems installer:
+```bash
+# On Linux/macOS
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+
+# On Windows (WSL2)
+wsl --install
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+```
+
+2. Clone the repository and enter the development environment:
+```bash
+git clone https://github.com/EthnTuttle/rovr.git
+cd rovr
+nix-shell
+```
+
+3. Build and run:
+```bash
+cargo build
+cargo run
+```
+
+### Option 2: Using the Install Script
+
+If you prefer not to use Nix, you can use the provided install script. This is simpler but may require manual dependency management.
 
 1. Clone the repository:
 ```bash
@@ -17,17 +41,13 @@ git clone https://github.com/EthnTuttle/rovr.git
 cd rovr
 ```
 
-2. Install Python dependencies:
+2. Run the installation script:
 ```bash
-python3 -m venv venv
-source venv/bin/activate  # On Windows: .\venv\Scripts\activate
-pip install yt-dlp
+chmod +x install.sh
+./install.sh
 ```
 
-3. Build the project:
-```bash
-cargo build
-```
+The script will check for dependencies, set up the environment, and create a default config file.
 
 ## Configuration
 
@@ -90,21 +110,6 @@ cargo run
 - Persistent key storage
 - QR code generation for easy bot identification
 - Cross-platform support
-
-## Performance
-
-- Downloads are processed concurrently in separate tasks
-- The bot remains responsive while processing multiple downloads
-- Failed downloads don't affect other ongoing conversions
-- Memory-efficient task management using Tokio runtime
-
-## Security
-
-- The bot only responds to messages from pubkeys listed in `allowed_pubkeys`
-- All direct messages are encrypted using NIP-04
-- Keys are stored securely in the user's application data directory
-- No API keys or sensitive information are stored in the code
-- Downloads are isolated to prevent interference
 
 ## License
 
