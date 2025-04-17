@@ -15,6 +15,10 @@ use serde_json::json;
 use config::Config;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use mullvad_api::MullvadAPI;
+use mullvad_types::location::Location;
+use talpid_core::mullvad_daemon::Daemon;
+use talpid_tunnel::Tunnel;
 
 const YOUTUBE_URL_PATTERN: &str = r"(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})";
 
@@ -174,6 +178,28 @@ async fn update_subscription(client: &Client, keys: &Keys, allowed_pubkeys: &[St
     Ok(true)
 }
 
+async fn switch_vpn_location() -> Result<()> {
+    let daemon = Daemon::new().await?;
+    let api = MullvadAPI::new(daemon);
+    
+    // Get current location
+    let current_location = api.get_current_location().await?;
+    info!("Current VPN location: {:?}", current_location);
+    
+    // Get available locations
+    let locations = api.get_locations().await?;
+    let new_location = locations
+        .iter()
+        .find(|loc| loc.id != current_location.id)
+        .ok_or_else(|| anyhow::anyhow!("No alternative locations available"))?;
+    
+    // Switch to new location
+    api.set_location(new_location.id.clone()).await?;
+    info!("Switched VPN location to: {:?}", new_location);
+    
+    Ok(())
+}
+
 async fn handle_download(
     client: &Client,
     keys: &Keys,
@@ -189,58 +215,86 @@ async fn handle_download(
     // Use yt-dlp from virtual environment
     let yt_dlp_path = PathBuf::from("/home/ethan/code/rovr/venv/bin/yt-dlp");
     
-    // Download and convert to audio
-    let output = Command::new(yt_dlp_path)
-        .args([
-            "-x", // Extract audio
-            "--audio-format", &format,
-            "--audio-quality", &quality,
-            "-o", // Output format
-            &format!("{}/%(title)s.%(ext)s", downloads_dir.display()),
-            &youtube_url,
-        ])
-        .output()?;
+    // Try download with retries
+    let mut retries = 3;
+    let mut last_error = None;
+    
+    while retries > 0 {
+        // Download and convert to audio
+        let output = Command::new(&yt_dlp_path)
+            .args([
+                "-x", // Extract audio
+                "--audio-format", &format,
+                "--audio-quality", &quality,
+                "-o", // Output format
+                &format!("{}/%(title)s.%(ext)s", downloads_dir.display()),
+                &youtube_url,
+            ])
+            .output()?;
 
-    if output.status.success() {
-        info!("Successfully downloaded and converted video: {}", video_id);
-        // Send success message with YouTube link and download path
-        let response = format!(
-            "Successfully downloaded and converted the video to {}!\n\nYouTube: {}\n\nFile saved to: {}",
-            format.to_uppercase(),
-            youtube_url,
-            downloads_dir.display()
-        );
-        let encrypted_content = nip04::encrypt(
-            &keys.secret_key()?,
-            &event.pubkey,
-            response,
-        )?;
-        let response_event = EventBuilder::new(
-            Kind::EncryptedDirectMessage,
-            encrypted_content,
-            &[Tag::parse(vec!["p", &event.pubkey.to_string()]).unwrap()],
-        ).to_event(&keys)?;
-        
-        client.send_event(response_event).await?;
-        info!("Sent success response to user for video: {}", video_id);
-    } else {
-        error!("Failed to download video {}. Error: {:?}", video_id, String::from_utf8_lossy(&output.stderr));
-        // Send error message with YouTube link
-        let error_msg = format!("Failed to download and convert the video.\n\nYouTube: {}\n\nPlease try again later.", youtube_url);
-        let encrypted_content = nip04::encrypt(
-            &keys.secret_key()?,
-            &event.pubkey,
-            error_msg,
-        )?;
-        let error_event = EventBuilder::new(
-            Kind::EncryptedDirectMessage,
-            encrypted_content,
-            &[Tag::parse(vec!["p", &event.pubkey.to_string()]).unwrap()],
-        ).to_event(&keys)?;
-        
-        client.send_event(error_event).await?;
-        info!("Sent error response to user for video: {}", video_id);
+        if output.status.success() {
+            info!("Successfully downloaded and converted video: {}", video_id);
+            // Send success message with YouTube link and download path
+            let response = format!(
+                "Successfully downloaded and converted the video to {}!\n\nYouTube: {}\n\nFile saved to: {}",
+                format.to_uppercase(),
+                youtube_url,
+                downloads_dir.display()
+            );
+            let encrypted_content = nip04::encrypt(
+                &keys.secret_key()?,
+                &event.pubkey,
+                response,
+            )?;
+            let response_event = EventBuilder::new(
+                Kind::EncryptedDirectMessage,
+                encrypted_content,
+                &[Tag::parse(vec!["p", &event.pubkey.to_string()]).unwrap()],
+            ).to_event(&keys)?;
+            
+            client.send_event(response_event).await?;
+            info!("Sent success response to user for video: {}", video_id);
+            return Ok(());
+        } else {
+            let error = String::from_utf8_lossy(&output.stderr);
+            last_error = Some(error.to_string());
+            
+            // Check if it's a bot detection error
+            if error.contains("Sign in to confirm you're not a bot") {
+                info!("YouTube bot detection triggered, switching VPN location...");
+                switch_vpn_location().await?;
+                retries -= 1;
+                if retries > 0 {
+                    info!("Retrying download with new VPN location ({} attempts remaining)", retries);
+                    continue;
+                }
+            }
+            
+            error!("Failed to download video {}. Error: {:?}", video_id, error);
+            break;
+        }
     }
+
+    // Send error message with YouTube link
+    let error_msg = format!(
+        "Failed to download and convert the video.\n\nYouTube: {}\n\nError: {}\n\nTried {} different VPN locations.",
+        youtube_url,
+        last_error.unwrap_or_else(|| "Unknown error".to_string()),
+        3 - retries
+    );
+    let encrypted_content = nip04::encrypt(
+        &keys.secret_key()?,
+        &event.pubkey,
+        error_msg,
+    )?;
+    let error_event = EventBuilder::new(
+        Kind::EncryptedDirectMessage,
+        encrypted_content,
+        &[Tag::parse(vec!["p", &event.pubkey.to_string()]).unwrap()],
+    ).to_event(&keys)?;
+    
+    client.send_event(error_event).await?;
+    info!("Sent error response to user for video: {}", video_id);
 
     Ok(())
 }
