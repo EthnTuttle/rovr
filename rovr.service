@@ -1,0 +1,15 @@
+[Unit]
+Description=Rovr - YouTube Downloader Bot for Nostr
+After=network.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=/home/%USER%/.local/share/rovr
+Environment="RUST_BACKTRACE=1"
+ExecStart=/usr/local/bin/rovr
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target 

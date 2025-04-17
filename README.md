@@ -49,6 +49,52 @@ chmod +x install.sh
 
 The script will check for dependencies, set up the environment, and create a default config file.
 
+### Running as a System Service (Linux)
+
+To run Rovr as a system service on Linux:
+
+1. Build the release version:
+```bash
+cargo build --release
+```
+
+2. Install the systemd service:
+```bash
+chmod +x install-service.sh
+sudo ./install-service.sh
+```
+
+The script will:
+- Install the binary to `/usr/local/bin`
+- Set up the systemd service
+- Ask if you want to start the service
+- Ask if you want to enable the service on boot
+
+Common systemd commands:
+- Start service: `sudo systemctl start rovr`
+- Stop service: `sudo systemctl stop rovr`
+- Restart service: `sudo systemctl restart rovr`
+- Enable on boot: `sudo systemctl enable rovr`
+- Disable on boot: `sudo systemctl disable rovr`
+- View logs: `sudo journalctl -u rovr -f`
+- Check status: `sudo systemctl status rovr`
+
+### Uninstalling the Service
+
+To uninstall the system service:
+
+1. Run the uninstall script:
+```bash
+chmod +x uninstall-service.sh
+sudo ./uninstall-service.sh
+```
+
+The script will:
+- Stop and disable the service
+- Remove the binary from `/usr/local/bin`
+- Remove the systemd service file
+- Ask if you want to remove the data directory
+
 ## Configuration
 
 The application is configured using the `config.toml` file:
