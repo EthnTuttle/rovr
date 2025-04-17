@@ -10,9 +10,12 @@ use qrcode::QrCode;
 use qrcode::render::unicode;
 use log::{info, error};
 use directories::ProjectDirs;
+use reqwest;
+use serde_json::json;
 
 const YOUTUBE_URL_PATTERN: &str = r"(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)([a-zA-Z0-9_-]{11})";
 const ALLOWED_PUBKEY: &str = "npub160t5zfxalddaccdc7xx30sentwa5lrr3rq4rtm38x99ynf8t0vwsvzyjc9";
+const BOT_NAME: &str = "YouTube Downloader Bot";
 
 fn get_keys() -> Result<Keys> {
     if let Some(proj_dirs) = ProjectDirs::from("com", "rovr", "rovr") {
@@ -49,6 +52,48 @@ fn print_qr_code(text: &str) {
     println!("\nQR Code for npub:\n{}", qr_string);
 }
 
+async fn get_random_dog_image() -> Result<String> {
+    let response = reqwest::get("https://dog.ceo/api/breeds/image/random")
+        .await?
+        .json::<serde_json::Value>()
+        .await?;
+    
+    Ok(response["message"].as_str().unwrap().to_string())
+}
+
+async fn set_profile_metadata(client: &Client, keys: &Keys) -> Result<()> {
+    let dog_image = get_random_dog_image().await?;
+    
+    let metadata = json!({
+        "name": BOT_NAME,
+        "about": "I download YouTube videos and convert them to MP3!",
+        "picture": dog_image,
+        "nip05": "youtube_downloader@nostr.band"
+    });
+
+    let metadata_event = EventBuilder::new(
+        Kind::Metadata,
+        metadata.to_string(),
+        &[],
+    ).to_event(keys)?;
+
+    client.send_event(metadata_event).await?;
+    info!("Set profile metadata with name: {} and random dog picture", BOT_NAME);
+    
+    Ok(())
+}
+
+fn get_downloads_dir() -> Result<PathBuf> {
+    if let Some(proj_dirs) = ProjectDirs::from("com", "rovr", "rovr") {
+        let downloads_dir = proj_dirs.data_dir().join("downloads");
+        fs::create_dir_all(&downloads_dir)?;
+        Ok(downloads_dir)
+    } else {
+        error!("Could not determine application data directory");
+        Ok(PathBuf::from("downloads"))
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logger with INFO level by default
@@ -59,10 +104,15 @@ async fn main() -> Result<()> {
     let keys = get_keys()?;
     let bot_npub = keys.public_key().to_bech32()?;
     println!("\n=== BOT IDENTITY ===");
+    println!("Name: {}", BOT_NAME);
     println!("npub: {}", bot_npub);
     println!("===================\n");
     info!("Bot public key: {}", bot_npub);
     print_qr_code(&bot_npub);
+
+    // Create downloads directory
+    let downloads_dir = get_downloads_dir()?;
+    info!("Using downloads directory: {}", downloads_dir.display());
 
     // Create a new client
     let client = Client::new(&keys);
@@ -79,13 +129,16 @@ async fn main() -> Result<()> {
     client.connect().await;
     info!("Connected to all relays");
 
+    // Set profile metadata
+    set_profile_metadata(&client, &keys).await?;
+
     // Convert the allowed pubkey to XOnlyPublicKey
     let allowed_pubkey = XOnlyPublicKey::from_bech32(ALLOWED_PUBKEY)?;
     info!("Converted allowed pubkey: {}", ALLOWED_PUBKEY);
 
     // Create a subscription for DMs from the specific pubkey
     let subscription = Filter::new()
-        .kinds(vec![Kind::EncryptedDirectMessage]) // NIP-04 encrypted DMs
+        .kinds(vec![Kind::EncryptedDirectMessage])
         .pubkey(keys.public_key())
         .authors(vec![allowed_pubkey])
         .since(Timestamp::now());
@@ -97,12 +150,6 @@ async fn main() -> Result<()> {
     // Create regex for YouTube URLs
     let youtube_regex = Regex::new(YOUTUBE_URL_PATTERN).unwrap();
     info!("Initialized YouTube URL regex");
-
-    // Create downloads directory if it doesn't exist
-    if !PathBuf::from("downloads").exists() {
-        fs::create_dir_all("downloads")?;
-        info!("Created downloads directory");
-    }
 
     info!("Bot is running and listening for DMs from {}", ALLOWED_PUBKEY);
 
@@ -126,12 +173,13 @@ async fn main() -> Result<()> {
                         let youtube_url = format!("https://youtube.com/watch?v={}", video_id.as_str());
                         
                         // Download and convert to MP3
-                        let output = Command::new("yt-dlp")
+                        let output = Command::new("./venv/bin/yt-dlp")
                             .args([
                                 "-x", // Extract audio
-                                "--audio-format", "mp3", // Convert to MP3
+                                "--audio-format", "aac", // Convert to AAC
                                 "--audio-quality", "0", // Best quality
-                                "-o", "downloads/%(title)s.%(ext)s", // Output format
+                                "-o", // Output format
+                                &format!("{}/%(title)s.%(ext)s", downloads_dir.display()),
                                 &youtube_url,
                             ])
                             .output()?;

@@ -1,2 +1,5 @@
 /target
 downloads/
+venv/
+ffmpeg*/
+ffmpeg-*.xz
