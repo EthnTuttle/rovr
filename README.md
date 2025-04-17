@@ -1,5 +1,18 @@
 # Rovr
 
+⚠️ **VIBE CODED WARNING** ⚠️
+
+This project is vibe-coded, which means:
+- It works on my machine (and hopefully yours)
+- The code is more art than science
+- Documentation may be vibes-based
+- Updates may break things in unexpected ways
+- You're welcome to contribute, but expect vibes
+
+If you're looking for enterprise-grade, production-ready code, this might not be the project for you. If you're cool with vibes, welcome aboard! 🎵
+
+---
+
 A Rust-based Nostr bot that downloads and converts YouTube videos to MP3 format. The bot listens for direct messages containing YouTube URLs from authorized users and automatically downloads and converts them in parallel.
 
 ## Installation

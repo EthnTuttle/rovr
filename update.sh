@@ -14,16 +14,38 @@ fi
 # Get the current user
 USER=$(logname)
 
-# Function to read input with timeout and default to No
+# Function to read input with timeout and default to Yes
 read_timeout() {
     local prompt="$1"
     local timeout=10
-    local default="n"
+    local default="y"
     
-    echo -n "$prompt (y/N, timeout ${timeout}s) "
+    echo -n "$prompt (Y/n, timeout ${timeout}s) "
     read -t $timeout -n 1 -r answer || answer=$default
     echo
     [[ $answer =~ ^[Yy]$ ]]
+}
+
+# Function to read input with default value and validation
+read_with_default() {
+    local prompt="$1"
+    local default="$2"
+    local validation="$3"  # Optional validation function name
+    local input
+    
+    while true; do
+        echo -n "$prompt [$default]: "
+        read input
+        input="${input:-$default}"
+        
+        if [ -n "$validation" ] && ! $validation "$input"; then
+            echo "Invalid input. Please try again."
+            continue
+        fi
+        
+        echo "$input"
+        break
+    done
 }
 
 # Check if git is installed
@@ -38,8 +60,17 @@ if [ ! -d .git ]; then
     exit 1
 fi
 
-# Stop the service if it's running
+# Get the application data directory
+if [ -z "$XDG_DATA_HOME" ]; then
+    DATA_DIR="$HOME/.local/share/rovr"
+else
+    DATA_DIR="$XDG_DATA_HOME/rovr"
+fi
+
+# Check if the service is running
+SERVICE_WAS_RUNNING=false
 if systemctl is-active --quiet rovr; then
+    SERVICE_WAS_RUNNING=true
     echo "Stopping rovr service..."
     systemctl stop rovr
 fi
@@ -50,21 +81,13 @@ if [ -f "config.toml" ]; then
     cp config.toml config.toml.bak
 fi
 
-# Get the application data directory
-if [ -z "$XDG_DATA_HOME" ]; then
-    DATA_DIR="$HOME/.local/share/rovr"
-else
-    DATA_DIR="$XDG_DATA_HOME/rovr"
-fi
-
-# Backup the application data configuration
 if [ -f "$DATA_DIR/config.toml" ]; then
     cp "$DATA_DIR/config.toml" "$DATA_DIR/config.toml.bak"
 fi
 
-# Pull the latest changes
-echo "Pulling latest changes..."
-git pull
+# # Pull the latest changes
+# echo "Pulling latest changes..."
+# git pull
 
 # Update Python dependencies
 echo "Updating Python dependencies..."
@@ -74,8 +97,8 @@ if [ -d "venv" ]; then
 fi
 
 # Build the project
-echo "Building the project..."
-cargo build --release
+# echo "Building the project..."
+# cargo build --release
 
 # Restore configuration
 echo "Restoring configuration..."
@@ -95,7 +118,7 @@ if [ -f "/usr/local/bin/rovr" ]; then
 fi
 
 # Restart the service if it was running
-if systemctl is-enabled --quiet rovr; then
+if $SERVICE_WAS_RUNNING; then
     if read_timeout "Do you want to start the service now?"; then
         echo "Starting rovr service..."
         systemctl start rovr
